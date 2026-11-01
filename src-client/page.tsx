@@ -232,7 +232,7 @@ function ActivityZone(): React.ReactNode {
 // ---------------------------------------------------------------- ② 运行状态条
 
 /** 单个 TUI 进程卡。 */
-function ProcCard(props: { proc: TuiProc }): React.ReactNode {
+function ProcCard(props: { proc: TuiProc; onView?: (pid: number) => void }): React.ReactNode {
   const p = props.proc
   return (
     <div className="dshca-proc" title={p.command}>
@@ -240,6 +240,17 @@ function ProcCard(props: { proc: TuiProc }): React.ReactNode {
         {p.alive ? '🟢' : '⚪'} TUI · PID {p.pid}
       </b>{' '}
       <span className={`dshca-badge${p.alive ? ' dshca-badge-ok' : ''}`}>{p.alive ? '存活' : '已退出'}</span>
+      {p.alive && props.onView !== undefined ? (
+        <button
+          type="button"
+          className="dshca-btn-ghost"
+          style={{ marginLeft: 6, padding: '1px 8px', fontSize: 11 }}
+          onClick={() => props.onView!(p.pid)}
+          title="在「TUI 终端」页查看并操作此进程画面"
+        >
+          查看
+        </button>
+      ) : null}
       <div className="dshca-dim">
         RSS {fmtBytes(p.rssBytes)} · 运行 {fmtDuration(p.startedAt)}
         {p.alive === false && p.exitedAt !== undefined ? ` · 退出于 ${fmtTime(Date.parse(p.exitedAt))}` : ''}
@@ -258,7 +269,13 @@ interface StatusFace {
 }
 
 /** Tab 2「概览」：运行状态卡 + 受监督目标摘要（计数 + 每目标状态行）。 */
-function StatusZone(props: { status: StatusFace }): React.ReactNode {
+function StatusZone(props: {
+  status: StatusFace
+  /** 点某托管 TUI 的「查看」：选中并切到终端页。 */
+  onViewTui: (pid: number) => void
+  /** 启动 codearts 成功：选中新 PID 并切到终端页。 */
+  onStartedTui: (pid: number) => void
+}): React.ReactNode {
   const { data, error, refresh, lastUpdated } = props.status
   const [busy, setBusy] = React.useState(false)
   const [note, setNote] = React.useState<string | null>(null)
@@ -286,9 +303,11 @@ function StatusZone(props: { status: StatusFace }): React.ReactNode {
     const size = proposePtySize()
     act(
       () =>
-        api.startTui(size.cols, size.rows).then(
-          (r) => `已启动 codearts TUI，托管 PID ${r.pid}（PTY ${size.cols}×${size.rows}，运行情况见「TUI 终端」页）`,
-        ),
+        api.startTui(size.cols, size.rows).then((r) => {
+          // 启动成功 → 选中新 PID 并切到终端页（用户意图明确：要看新会话画面）
+          props.onStartedTui(r.pid)
+          return `已启动 codearts TUI，托管 PID ${r.pid}（PTY ${size.cols}×${size.rows}），已切到「TUI 终端」页`
+        }),
       '启动 codearts',
     )
   }
@@ -335,7 +354,7 @@ function StatusZone(props: { status: StatusFace }): React.ReactNode {
           </div>
         ) : null}
         {tuis.map((p) => (
-          <ProcCard key={p.pid} proc={p} />
+          <ProcCard key={p.pid} proc={p} onView={p.alive ? props.onViewTui : undefined} />
         ))}
       </div>
       {externals.length > 0 ? (
@@ -920,6 +939,8 @@ export function CodeArtsPanel(): React.ReactNode {
   const statusFetcher = React.useCallback(() => api.getStatus(), [])
   const status = usePoll(statusFetcher, POLL_MS)
   const [tab, setTab] = React.useState<TabId>('terminal')
+  /** 终端页正在查看的托管 TUI PID（概览「查看」/ 终端选择器 / 启动成功 三处写入；null=自动绑最新存活）。 */
+  const [viewPid, setViewPid] = React.useState<number | null>(null)
   const goals = status.data?.goals ?? []
   const panelStyle = (active: boolean, scroll = true): React.CSSProperties =>
     active
@@ -947,10 +968,26 @@ export function CodeArtsPanel(): React.ReactNode {
       </div>
       {/* 面板全部常挂载（display 切换）：终端 SSE 不因切 Tab 断流，切回即最新 */}
       <div style={panelStyle(tab === 'terminal', false)}>
-        <TerminalZone tuis={status.data?.processes.tui ?? []} active={tab === 'terminal'} />
+        <TerminalZone
+          tuis={status.data?.processes.tui ?? []}
+          externals={status.data?.processes.external?.procs ?? []}
+          active={tab === 'terminal'}
+          selectedPid={viewPid}
+          onSelectPid={setViewPid}
+        />
       </div>
       <div style={panelStyle(tab === 'overview')}>
-        <StatusZone status={status} />
+        <StatusZone
+          status={status}
+          onViewTui={(pid) => {
+            setViewPid(pid)
+            setTab('terminal')
+          }}
+          onStartedTui={(pid) => {
+            setViewPid(pid)
+            setTab('terminal')
+          }}
+        />
         <section className="dshca-section">
           <h2 className="dshca-h2">受监督目标摘要</h2>
           <GoalsSummary goals={goals} />

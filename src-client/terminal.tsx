@@ -91,9 +91,23 @@ function connBadgeCls(s: ConnState): string {
 }
 
 /** 终端 Tab（独占整页）：xterm + 连接状态徽章 + 重连 + 键入直通。 */
-export function TerminalZone(props: { tuis: TuiProc[]; active: boolean }): React.ReactNode {
+export function TerminalZone(props: {
+  tuis: TuiProc[]
+  /** 非托管 codearts 进程（其他宿主启动）：仅展示为不可接入的灰 chip，绝不伪装成可查看。 */
+  externals: Array<{ pid: number }>
+  active: boolean
+  /** 用户显式选择的查看目标（null = 自动绑定最新存活托管 TUI）。 */
+  selectedPid: number | null
+  onSelectPid: (pid: number | null) => void
+}): React.ReactNode {
   const alive = props.tuis.filter((p) => p.alive)
-  const pid = alive.length > 0 ? (alive[alive.length - 1] ?? null)!.pid : null
+  const selected = props.selectedPid !== null ? (props.tuis.find((p) => p.pid === props.selectedPid) ?? null) : null
+  // 绑定优先级：显式选择的存活 TUI > 默认最新存活。显式选择已死 → 不自动改绑其他
+  // 进程（防"画面看起来还连着"的错觉），显式报"已退出"由用户重新选择。
+  const pid = selected !== null
+    ? (selected.alive ? selected.pid : null)
+    : (alive.length > 0 ? (alive[alive.length - 1] ?? null)!.pid : null)
+  const selectedDead = selected !== null && !selected.alive
   const [nonce, setNonce] = React.useState(0) // 重连信号（手动重连/心跳超时共用）
   const [conn, setConn] = React.useState<ConnState>(pid === null ? 'idle' : 'connecting')
   const [err, setErr] = React.useState<string | null>(null)
@@ -405,7 +419,45 @@ export function TerminalZone(props: { tuis: TuiProc[]; active: boolean }): React
           </button>
         </span>
       </h2>
-      {pid === null ? (
+      {props.tuis.length > 0 || props.externals.length > 0 ? (
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', flexShrink: 0 }}>
+          <span style={{ color: '#9a9a9a', fontSize: 11 }}>查看目标:</span>
+          <button
+            type="button"
+            className={`dshca-chip${props.selectedPid === null && pid !== null ? ' dshca-chip-on' : ''}`}
+            onClick={() => props.onSelectPid(null)}
+            title="自动绑定最新启动的存活托管 TUI"
+          >
+            自动 · 最新
+          </button>
+          {props.tuis.map((p) => (
+            <button
+              key={p.pid}
+              type="button"
+              className={`dshca-chip${p.pid === pid ? ' dshca-chip-on' : ''}${p.alive ? '' : ' dshca-chip-dead'}`}
+              onClick={() => props.onSelectPid(p.pid)}
+              title={p.alive ? `查看 PID ${p.pid} 的终端画面` : `PID ${p.pid} 已退出（仅留档，无法重连）`}
+            >
+              {p.alive ? '🟢' : '⚪'} PID {p.pid}
+            </button>
+          ))}
+          {props.externals.map((p) => (
+            <span
+              key={p.pid}
+              className="dshca-chip dshca-chip-ext"
+              title="非托管进程：由其他宿主（如 codearts-bridge 守护）启动，PTY 归其所有，本插件无法接入画面/输入"
+            >
+              非托管 {p.pid}（不可接入）
+            </span>
+          ))}
+        </div>
+      ) : null}
+      {selectedDead ? (
+        <div className="dshca-empty">
+          所选 TUI（PID {props.selectedPid}）已退出——在上方选择其他 TUI，或到「概览」页点「启动 codearts」。
+        </div>
+      ) : null}
+      {pid === null && !selectedDead ? (
         <div className="dshca-empty">
           当前没有存活的托管 TUI——到「概览」页点「启动 codearts」后此页自动接入新进程。
         </div>
