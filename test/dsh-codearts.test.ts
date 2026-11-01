@@ -624,7 +624,7 @@ describe('插件入口 index.apply', () => {
     const ctx: any = {
       webServer: { register: (route: any) => { registered.push(route); return () => { }; } },
       effect: (fn: () => any, label: string) => { effects.push(label); return fn(); },
-      tools: { register: (tool: any) => { toolsRegistered.push(tool.name); return () => { }; } },
+      tools: { register: (tool: any) => { toolsRegistered.push(tool); return () => { }; } },
     };
     const cleanup = pluginApply(ctx, {
       stateDir,
@@ -635,7 +635,7 @@ describe('插件入口 index.apply', () => {
     expect(effects.some((l) => l.includes('HTTP routes'))).toBe(true);
     expect(registered).toHaveLength(1);
     expect(registered[0]!.path).toBe('/codearts');
-    expect([...toolsRegistered].sort()).toEqual(['codearts_goal', 'codearts_run', 'codearts_status']);
+    expect([...toolsRegistered].map((t) => t.name).sort()).toEqual(['codearts_goal', 'codearts_run', 'codearts_status']);
     // 路由可用：status 端点经注册的 handler 直调
     const route = registered[0]!;
     const mockRes = await new Promise<any>((resolveRes) => {
@@ -649,6 +649,15 @@ describe('插件入口 index.apply', () => {
     expect(mockRes.status).toBe(200);
     expect(mockRes.body.ok).toBe(true);
     expect(mockRes.body.processes).toBeDefined();
+    // 非托管进程发现：路由必须带上 discovery 结果（procs 数组 + error 字段），
+    // 否则智能体/界面会再次把"托管表为空"误读成"没有 TUI 在跑"。
+    expect(Array.isArray(mockRes.body.processes.external.procs)).toBe(true);
+    expect('error' in mockRes.body.processes.external).toBe(true);
+    // 平台工具口径必须与 HTTP 一致：codearts_status 也返回 external
+    const statusTool = toolsRegistered.find((t) => t.name === 'codearts_status');
+    const toolValue = await statusTool!.execute({});
+    expect(Array.isArray(toolValue.processes.external.procs)).toBe(true);
+    expect('error' in toolValue.processes.external).toBe(true);
     cleanup();
   }, 15000);
 
