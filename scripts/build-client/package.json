@@ -1,0 +1,13 @@
+{
+  "name": "dsh-codearts-client-build",
+  "private": true,
+  "description": "dsh-codearts 客户端构建期开发依赖（类型检查用；运行时 React 由 dsh 宿主注入，打包由 bun build 完成、零依赖解析）。此目录的 node_modules 不入库。",
+  "type": "module",
+  "devDependencies": {
+    "@types/react": "~18.3.1",
+    "@types/react-dom": "^18.3.7",
+    "@xterm/addon-fit": "^0.10.0",
+    "@xterm/xterm": "^5.5.0",
+    "typescript": "~5.7.2"
+  }
+}

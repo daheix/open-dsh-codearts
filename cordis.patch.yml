@@ -1,0 +1,5 @@
+# dsh-codearts bundle patch
+# CodeArts CLI 完整集成插件：进程托管 + 目标监督 + HTTP 管理 API
+- insert:
+    - id: dsh-codearts
+      name: "dsh-codearts"

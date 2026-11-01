@@ -1,0 +1,17 @@
+# 内部资料（操作记录 / 交付报告 / 迁移历史）——不对外发布
+.internal/
+
+# 测试与调试临时产物（工作目录内临时目录，用后即删，不入库）
+.tmp/
+test/.tmp/
+node_modules/
+dist-client/
+*.log
+
+# 构建期依赖清单需入库：根 .gitignore 的 build-*/ 排除了 scripts/build-client/ 目录
+# 本体（目录被排除后内部 ! 反选不生效，须先反选目录再排除内部产物）
+!scripts/build-client/
+scripts/build-client/node_modules/
+
+# 系统杂项
+.DS_Store

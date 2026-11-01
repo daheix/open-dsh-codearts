@@ -1,0 +1,24 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "jsx": "react",
+    "jsxFactory": "React.createElement",
+    "jsxFragmentFactory": "React.Fragment",
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "types": [],
+    "paths": {
+      "react": ["./scripts/build-client/node_modules/@types/react"],
+      "react-dom": ["./scripts/build-client/node_modules/@types/react-dom"],
+      "react-dom/client": ["./scripts/build-client/node_modules/@types/react-dom/client"]
+    }
+  },
+  "include": ["src-client/**/*.ts", "src-client/**/*.tsx"]
+}
