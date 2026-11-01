@@ -1153,7 +1153,8 @@ describe('client.js 静态校验（侧栏面板形态，离线检查）', () => 
     expect(clientSource).toContain('模型配置');
     expect(clientSource).toContain('日志与交互流');
     // 刷新根治：单例守卫 + reset 清屏 + 批量写入 + 心跳 watchdog
-    expect(clientSource).toContain('connPidRef');
+    // （2026-11-01 守护只读查看：守卫改为 connKeyRef，key=managed:<pid>/bridge:<refId>）
+    expect(clientSource).toContain('connKeyRef');
     expect(clientSource).toContain('reset()');
     expect(clientSource).toContain('enqueueWrite');
     expect(clientSource).toContain('HEARTBEAT_TIMEOUT_MS');
