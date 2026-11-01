@@ -468,7 +468,9 @@ export function TerminalZone(props: {
       <h2 className="dshca-h2">
         TUI 终端
         <span className="dshca-h2note" style={{ color: '#fbbf24' }}>
-          ⚠ 直连码道 TUI（键盘输入实时生效）
+          {target !== null && !target.managed
+            ? '⚠ 守护会话只读画面（输入由 codearts-bridge 监督驱动，本面板不注入键盘）'
+            : '⚠ 直连码道 TUI（键盘输入实时生效）'}
         </span>
         <span style={{ marginLeft: 'auto', display: 'inline-flex', gap: 8, alignItems: 'center' }}>
           <span className={connBadgeCls(conn)}>{CONN_LABEL[conn]}</span>

@@ -1,6 +1,6 @@
 {
   "name": "dsh-codearts",
-  "version": "0.3.6",
+  "version": "0.3.7",
   "description": "华为云 CodeArts CLI 的 dsh（DeepSeek Harness）集成插件：PTY 终端托管、目标监督续跑、模型配置界面、HTTP 管理 API",
   "type": "module",
   "main": "lib/index.js",
