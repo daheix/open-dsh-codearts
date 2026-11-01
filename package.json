@@ -17,6 +17,7 @@
     "tsconfig.json",
     "cordis.patch.yml",
     "manage.sh",
+    "install.sh",
     "package.json"
   ],
   "scripts": {

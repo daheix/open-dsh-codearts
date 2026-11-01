@@ -32,30 +32,43 @@
 
 ## 安装
 
-### 方式 A：从 GitHub 安装（推荐）
+### 方式 A：一键安装（推荐）
 
 ```bash
-# 安装到 web profile；dsh 会自动把带 dsh.bundle 的新依赖加入 dsh.profile.bundles
-dsh plugin --profile web add github:daheix/open-dsh-codearts
+git clone https://github.com/daheix/open-dsh-codearts.git
+cd open-dsh-codearts
+./install.sh              # 默认装到 web profile；其它 profile: ./install.sh tui
 
-# 重启 dsh（插件为启动时加载，不热更新）
+# 重启 dsh 生效（安装器不会自动重启，避免中断正在运行的 TUI/目标）
 dsh --profile web --port 3080
 ```
 
-如果安装日志提示 `node-pty` 的构建脚本被 pnpm 忽略（pnpm 默认阻止依赖执行安装脚本）：
+安装器做四件事：调用 `dsh plugin add`（新 profile 自动初始化）→ 在 profile 的 `pnpm-workspace.yaml` 中允许 `node-pty` 原生构建（只改这一项，保留其他 `allowBuilds`）→ 首装被 pnpm 拦截时自动清理并重装一次 → 硬验证 bundle 注册、`node-pty` 编译产物、插件入口三者齐全，任一缺失即显式报错。
+
+> 也可以只下载安装器：`curl -fsSL https://raw.githubusercontent.com/daheix/open-dsh-codearts/main/install.sh -o install.sh && bash install.sh`
+
+<details>
+<summary>手动安装（与安装器等价）</summary>
+
+```bash
+dsh plugin --profile web add github:daheix/open-dsh-codearts
+```
+
+pnpm 首次会拦截 node-pty 构建并报 `ERR_PNPM_IGNORED_BUILDS`，此时编辑 `~/.dsh/profiles/web/pnpm-workspace.yaml`：
 
 ```yaml
-# ~/.dsh/profiles/web/pnpm-workspace.yaml
 allowBuilds:
   node-pty: true
 ```
 
-然后重建原生模块并重启：
+然后清掉半装依赖并重装（dsh 才会把 bundle 写入 `dsh.profile.bundles`）：
 
 ```bash
-dsh plugin --profile web rebuild node-pty
-dsh --profile web --port 3080
+dsh plugin --profile web remove dsh-codearts
+dsh plugin --profile web add github:daheix/open-dsh-codearts
 ```
+
+</details>
 
 > 不装 `node-pty` 时插件的 HTTP API / 模型配置仍可用，但 **TUI 终端会显式报错**（不会静默降级）。
 
