@@ -11,7 +11,7 @@
  */
 import { describe, test, expect, beforeAll, afterEach } from 'bun:test';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync, readFileSync, readdirSync, statSync, symlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 
@@ -51,7 +51,15 @@ class FakePM {
   cfg = { stateDir: '' };
   tuiProcs = new Map<number, any>();
   calls: Array<{ prompt: string; opts: any }> = [];
+  /** resume 时 TUI 已死会触发复活（goal-supervisor 缺陷③补丁），替身必须提供。 */
+  startedTuis: Array<{ pid: number; opts: any }> = [];
   script: (prompt: string, opts: any) => any = () => ({ ok: true, text: '' });
+  startTui(opts: any = {}) {
+    const pid = 900000 + this.startedTuis.length;
+    this.startedTuis.push({ pid, opts });
+    this.tuiProcs.set(pid, { pid, mode: 'tui', command: 'fake-codearts' });
+    return { pid, startedAt: Date.now(), command: 'fake-codearts' };
+  }
   async runOnce(prompt: string, opts: any = {}) {
     this.calls.push({ prompt, opts });
     return await this.script(prompt, opts);
@@ -127,6 +135,69 @@ describe('进程管理 ProcessManager', () => {
     const parsed = parseRunEvents('not json\n{"sessionID":"s1"}\n');
     expect(parsed.noiseLines).toBe(1);
     expect(parsed.sessionId).toBe('s1');
+  });
+});
+
+// ============================== ①b 非托管进程发现 ==============================
+
+describe('非托管 codearts 进程发现 discoverExternalTui', () => {
+  /** 构造 /proc 影子目录：<pid>/{exe→真实软链, cmdline, status}。 */
+  function fakeProc(root: string, pid: number, exeTarget: string, argv: string[], rssKb = 1024): void {
+    const dir = join(root, String(pid));
+    mkdirSync(dir, { recursive: true });
+    symlinkSync(exeTarget, join(dir, 'exe'));
+    writeFileSync(join(dir, 'cmdline'), argv.map((a) => `${a}\0`).join(''), 'utf8');
+    writeFileSync(join(dir, 'status'), `Name:\tcodearts\nState:\tS (sleeping)\nVmRSS:\t  ${rssKb} kB\n`, 'utf8');
+  }
+
+  test('按 /proc/<pid>/exe 真实路径识别；排除本进程、托管 PID 与非 codearts 进程', () => {
+    const stateDir = tmp('discover');
+    const procRoot = join(stateDir, 'proc');
+    mkdirSync(procRoot, { recursive: true });
+    const bin = join(stateDir, 'codearts');
+    writeFileSync(bin, '#!/bin/sh\n', { mode: 0o755 });
+    const other = join(stateDir, 'other-binary');
+    writeFileSync(other, '#!/bin/sh\n', { mode: 0o755 });
+
+    fakeProc(procRoot, 41001, bin, [bin], 2048);
+    fakeProc(procRoot, 41002, other, [other]);       // 非 codearts → 排除
+    fakeProc(procRoot, 41003, bin, [bin, 'run', 'x']); // 托管 → 排除（下方加入托管表）
+    mkdirSync(join(procRoot, '41004'), { recursive: true }); // 无 exe（已消失）→ 排除
+    mkdirSync(join(procRoot, 'self'), { recursive: true });  // 非数字 → 忽略
+
+    const pm = new ProcessManager({ stateDir, binPath: bin, wrapperPath: bin });
+    pm.tuiProcs.set(41003, { pid: 41003, startedAt: Date.now(), command: bin, mode: 'tui' } as any);
+
+    const found = pm.discoverExternalTui({ procRoot });
+    expect(found.error).toBeNull();
+    expect(found.procs.map((p) => p.pid)).toEqual([41001]);
+    expect(found.procs[0]!.managed).toBe(false);
+    expect(found.procs[0]!.rssBytes).toBe(2048 * 1024);
+    expect(found.procs[0]!.command).toBe(bin);
+  });
+
+  test('binPath 不存在 → 显式 error（不返回伪空列表）', () => {
+    const stateDir = tmp('discover-missing');
+    const pm = new ProcessManager({ stateDir, binPath: join(stateDir, 'nope', 'codearts'), wrapperPath: '/' });
+    const found = pm.discoverExternalTui({ procRoot: stateDir });
+    expect(found.procs).toHaveLength(0);
+    expect(found.error).toContain('无法解析 codearts binPath');
+  });
+
+  test('cmdline 不可读 → command 显式标注，不伪装成空命令', () => {
+    const stateDir = tmp('discover-nocmd');
+    const procRoot = join(stateDir, 'proc');
+    const dir = join(procRoot, '42001');
+    mkdirSync(dir, { recursive: true });
+    const bin = join(stateDir, 'codearts');
+    writeFileSync(bin, '', { mode: 0o755 });
+    symlinkSync(bin, join(dir, 'exe'));
+    writeFileSync(join(dir, 'status'), 'Name:\tcodearts\nState:\tR (running)\nVmRSS:\t  16 kB\n', 'utf8');
+    const pm = new ProcessManager({ stateDir, binPath: bin, wrapperPath: bin });
+    const found = pm.discoverExternalTui({ procRoot });
+    expect(found.procs).toHaveLength(1);
+    expect(found.procs[0]!.argv).toBeNull();
+    expect(found.procs[0]!.command).toBe('（cmdline 不可读）');
   });
 });
 

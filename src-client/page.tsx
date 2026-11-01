@@ -291,6 +291,8 @@ function StatusZone(props: { status: StatusFace }): React.ReactNode {
     act(() => api.stopTui(pid).then((r) => `已停止 PID ${r.pid}${r.alreadyGone ? '（进程此前已退出）' : ''}`), '停止 codearts')
 
   const tuis = data?.processes.tui ?? []
+  const external = data?.processes.external ?? null
+  const externals = external?.procs ?? []
   const aliveCount = tuis.filter((p) => p.alive).length
   const goalCount = data?.goals.length ?? 0
 
@@ -299,18 +301,49 @@ function StatusZone(props: { status: StatusFace }): React.ReactNode {
       <h2 className="dshca-h2">
         运行状态
         <span className="dshca-h2note">
-          托管 TUI {aliveCount} 存活 / {tuis.length} 总数 · 受监督目标 {goalCount} · 每 5s 刷新
+          托管 TUI {aliveCount} 存活 / {tuis.length} 总数 · 非托管 {externals.length} · 受监督目标 {goalCount} · 每 5s 刷新
         </span>
       </h2>
       {error !== null ? <ErrorBar message={error} /> : null}
+      {external?.error != null ? (
+        <div className="dshca-errbar">
+          <b>非托管进程发现失败</b>
+          <span>{external.error}</span>
+        </div>
+      ) : null}
       <div className="dshca-row">
         {tuis.length === 0 && error === null ? (
-          <div className="dshca-empty">当前没有托管 TUI 进程——点「启动 codearts」拉起一个交互式会话。</div>
+          <div className="dshca-empty">
+            {externals.length === 0
+              ? '当前没有托管 TUI 进程——点「启动 codearts」拉起一个交互式会话。'
+              : '本插件托管表为空（0 个托管 TUI）——下方进程由其他宿主启动，不受本面板管理。'}
+          </div>
         ) : null}
         {tuis.map((p) => (
           <ProcCard key={p.pid} proc={p} />
         ))}
       </div>
+      {externals.length > 0 ? (
+        <div className="dshca-ext">
+          <div className="dshca-ext-title">
+            ⚠ 检测到 {externals.length} 个非本插件托管的 codearts 进程
+          </div>
+          <div className="dshca-ext-note">
+            这些进程由其他宿主（如 codearts-bridge 守护、手工终端）启动：本插件只能观察它们存在，
+            <b>无法查看画面、无法输入、无法停止</b>。如需在本面板操作，请先在原宿主结束它们，再用「启动 codearts」重新拉起。
+          </div>
+          <div className="dshca-ext-list">
+            {externals.map((p) => (
+              <div key={p.pid} className="dshca-ext-item">
+                <span className="dshca-badge dshca-badge-warn">非托管</span> PID {p.pid}
+                <div className="dshca-dim">
+                  RSS {fmtBytes(p.rssBytes)} · 状态 {p.procState ?? '—'} · {p.command}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
       <div className="dshca-row" style={{ marginTop: 8 }}>
         <button type="button" className="dshca-btn" disabled={busy} onClick={startTui}>
           启动 codearts

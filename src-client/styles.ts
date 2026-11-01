@@ -41,6 +41,12 @@ export const PANEL_STYLES = `
 .dshca-input:focus{outline:1px solid #60a5fa}
 .dshca-form{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:8px;padding-top:8px;border-top:1px dashed #3a3a40}
 .dshca-empty{color:#9a9a9a;font-size:12px;padding:4px 0}
+.dshca-ext{border:1px solid rgba(251,191,36,.45);border-radius:8px;background:rgba(251,191,36,.08);padding:8px 10px;margin-top:8px}
+.dshca-ext-title{font-size:12px;font-weight:700;color:#fbbf24}
+.dshca-ext-note{font-size:11.5px;color:#cfcfcf;margin-top:4px;line-height:1.5}
+.dshca-ext-list{margin-top:6px;display:flex;flex-direction:column;gap:6px}
+.dshca-ext-item{font-size:12px;color:#ffffff;border-top:1px dashed rgba(251,191,36,.3);padding-top:6px}
+.dshca-ext-item .dshca-dim{color:#9a9a9a;font-size:11px;margin-top:2px;word-break:break-all}
 .dshca-spin{display:inline-block;animation:dshca-spin 0.9s linear infinite}
 @keyframes dshca-spin{to{transform:rotate(360deg)}}
 

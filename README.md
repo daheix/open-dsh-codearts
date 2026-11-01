@@ -18,6 +18,7 @@
 | **模型配置界面** | 列出 CodeArts 最近使用 / 内置候选 / 自定义模型，一键切换默认模型；支持添加、删除自定义 provider+model |
 | **交互流** | 解析 CodeArts kernel 日志为结构化时间线（用户/助手/工具/错误/系统），并与原始日志互相印证 |
 | **HTTP 管理 API** | `/codearts/*` 全套接口，可被脚本、CI 或其他智能体直接调用 |
+| **非托管进程可见** | 状态页只读发现系统中由其他宿主（codearts-bridge 守护、手工终端）启动的 codearts 进程，明确标注「非托管」，避免把"本插件没有托管 TUI"误读成"机器上没有 TUI 在跑" |
 | **dsh 平台工具** | 自动注册 `codearts_status` / `codearts_run` / `codearts_goal`，模型可在对话中直接调度 CodeArts |
 | **安装管家** | 探测 CodeArts CLI、备份自愈、受控升级（哈希校验 + 失败回滚），应对厂商自动升级缺陷 |
 
@@ -114,7 +115,7 @@ dsh plugin --profile web remove dsh-codearts
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET | `/codearts/status` | 总览（进程表 + 目标摘要 + 安装健康 + 审计健康） |
+| GET | `/codearts/status` | 总览（托管进程表 + 非托管进程发现 + 目标摘要 + 安装健康 + 审计健康） |
 | GET | `/codearts/health` | 进程健康（存活 / RSS / 启动时间） |
 | GET | `/codearts/models` | 模型清单（recent / builtin / custom + 当前模型） |
 | POST | `/codearts/model` | 切换默认模型 `{providerID, modelID}` |
@@ -188,6 +189,7 @@ DSH_PROFILE_DIR=~/.dsh/profiles/tui ./manage.sh deploy
 | TUI 启动报 `node-pty 原生模块不可用` | 在 profile 的 `pnpm-workspace.yaml` 添加 `allowBuilds: { node-pty: true }`，执行 `dsh plugin --profile web rebuild node-pty` |
 | TUI 起不来（无 node-pty 错误） | 确认 `~/.codeartsdoer/installers/codearts` 存在且可执行，`bin/codearts --version` 正常 |
 | 目标一直 active 不推进 | 查看 `<stateDir>/audit/<goalId>.jsonl` 的 `goal.stagnation` / `goal.error` 序列；TUI 模式可用 `check` 动作手动触发验收 |
+| 侧栏显示 0 个托管 TUI，但系统里有 codearts 在跑 | 这通常说明那些进程由别的宿主（codearts-bridge 守护、手工终端）启动，或 dsh 重启过（托管表是内存态，重启即清空）。状态页「非托管」区块会列出这些 PID；本插件只能观察，不能输入/停止。要在侧栏操作，请先在原宿主结束它们，再点「启动 codearts」 |
 | `POST /codearts/run` 返回 502 | 无头执行需要 AK/SK；未配置时按设计显式失败，请改用 TUI 目标路径 |
 
 ## 兼容性

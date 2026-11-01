@@ -71,6 +71,24 @@ export interface TuiProc {
   exitedAt?: string
 }
 
+/** 非本插件托管的 codearts 进程（GET /codearts/status → processes.external.procs[]）。 */
+export interface ExternalProc {
+  pid: number
+  /** 截断到 300 字符的命令行（展示用）。 */
+  command: string
+  /** 完整 argv；cmdline 不可读时为 null。 */
+  argv: string[] | null
+  rssBytes: number | null
+  procState: string | null
+  managed: false
+}
+
+/** 非托管进程发现结果：error 非空表示发现能力本身失败（不是"没有进程"）。 */
+export interface ExternalDiscovery {
+  procs: ExternalProc[]
+  error: string | null
+}
+
 /** 目标统计计数器（goal-supervisor stats）。 */
 export interface GoalStats {
   injections: number
@@ -114,7 +132,7 @@ export interface GoalSnapshot {
 /** GET /codearts/status 响应。 */
 export interface StatusResponse {
   ok: true
-  processes: { tui: TuiProc[]; runOnceActive?: number }
+  processes: { tui: TuiProc[]; runOnceActive?: number; external?: ExternalDiscovery }
   goals: GoalSnapshot[]
   audit: unknown
 }
