@@ -26,6 +26,8 @@ interface PollResult<T> {
   data: T | null
   error: string | null
   refresh: () => void
+  /** 最近一次成功拉取的本地时间（ms）；尚未成功为 null。 */
+  lastUpdated: number | null
 }
 
 /**
@@ -36,6 +38,7 @@ interface PollResult<T> {
 function usePoll<T>(fetcher: () => Promise<T>, ms: number): PollResult<T> {
   const [data, setData] = React.useState<T | null>(null)
   const [error, setError] = React.useState<string | null>(null)
+  const [lastUpdated, setLastUpdated] = React.useState<number | null>(null)
   const inFlight = React.useRef(false)
   const alive = React.useRef(true)
   React.useEffect(() => {
@@ -52,6 +55,7 @@ function usePoll<T>(fetcher: () => Promise<T>, ms: number): PollResult<T> {
         if (alive.current) {
           setData(d)
           setError(null)
+          setLastUpdated(Date.now())
         }
       })
       .catch((e: unknown) => {
@@ -66,7 +70,7 @@ function usePoll<T>(fetcher: () => Promise<T>, ms: number): PollResult<T> {
     const timer = setInterval(refresh, ms)
     return () => clearInterval(timer)
   }, [refresh, ms])
-  return { data, error, refresh }
+  return { data, error, refresh, lastUpdated }
 }
 
 /** 显式错误条：fetch 失败必现，禁静默。 */
@@ -250,11 +254,12 @@ interface StatusFace {
   data: StatusResponse | null
   error: string | null
   refresh: () => void
+  lastUpdated: number | null
 }
 
 /** Tab 2「概览」：运行状态卡 + 受监督目标摘要（计数 + 每目标状态行）。 */
 function StatusZone(props: { status: StatusFace }): React.ReactNode {
-  const { data, error, refresh } = props.status
+  const { data, error, refresh, lastUpdated } = props.status
   const [busy, setBusy] = React.useState(false)
   const [note, setNote] = React.useState<string | null>(null)
   const [noteErr, setNoteErr] = React.useState(false)
@@ -301,8 +306,18 @@ function StatusZone(props: { status: StatusFace }): React.ReactNode {
       <h2 className="dshca-h2">
         运行状态
         <span className="dshca-h2note">
-          托管 TUI {aliveCount} 存活 / {tuis.length} 总数 · 非托管 {externals.length} · 受监督目标 {goalCount} · 每 5s 刷新
+          托管 TUI {aliveCount} 存活 / {tuis.length} 总数 · 非托管 {externals.length} · 受监督目标 {goalCount} · 每 5s
+          自动刷新 · 上次 {lastUpdated === null ? '—' : fmtTime(lastUpdated)}
         </span>
+        <button
+          type="button"
+          className="dshca-btn-ghost"
+          style={{ marginLeft: 'auto', flexShrink: 0 }}
+          onClick={refresh}
+          title="立即重新拉取：托管进程表 + 非托管进程发现 + 目标摘要（平时每 5s 自动刷新，刚在外部启停过进程时点它免等）"
+        >
+          ⟳ 立即刷新
+        </button>
       </h2>
       {error !== null ? <ErrorBar message={error} /> : null}
       {external?.error != null ? (
