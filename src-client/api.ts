@@ -80,7 +80,29 @@ export interface ExternalProc {
   argv: string[] | null
   rssBytes: number | null
   procState: string | null
+  /** 父进程 PID（守护会话关联用：codearts 子进程的 PPid == 守护 script pid）。 */
+  ppid?: number | null
   managed: false
+  /** 命中守护会话关联时填写：该进程由 codearts-bridge 监督驱动，画面可只读查看。 */
+  bridge?: { goalId: string; phase: string; refId: string }
+}
+
+/** 守护会话（GET /tuis 条目）：只读画面查看目标。 */
+export interface BridgeViewTarget {
+  goalId: string
+  phase: string
+  refId: string
+  kind: string | null
+  pid: number | null
+  alive: boolean
+  rawLen?: number
+}
+
+/** 守护连接段（status.processes.bridge）：不可达时 available:false + 显式 error。 */
+export interface BridgeSection {
+  available: boolean
+  tuis: BridgeViewTarget[]
+  error: string | null
 }
 
 /** 非托管进程发现结果：error 非空表示发现能力本身失败（不是"没有进程"）。 */
@@ -132,7 +154,12 @@ export interface GoalSnapshot {
 /** GET /codearts/status 响应。 */
 export interface StatusResponse {
   ok: true
-  processes: { tui: TuiProc[]; runOnceActive?: number; external?: ExternalDiscovery }
+  processes: {
+    tui: TuiProc[]
+    runOnceActive?: number
+    external?: ExternalDiscovery
+    bridge?: BridgeSection
+  }
   goals: GoalSnapshot[]
   audit: unknown
 }

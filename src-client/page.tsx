@@ -13,6 +13,7 @@ import * as React from 'react'
 import * as api from './api'
 import type { ActivityItem, GoalSnapshot, ModelsResponse, StatusResponse, TuiProc } from './api'
 import { TerminalZone, proposePtySize } from './terminal'
+import type { ViewSelection } from './terminal'
 import { fmtBytes, fmtDuration, fmtTime, goalStateText, sessionStateText, shortGoalId, validateModelId } from './format'
 
 /** 全局轮询间隔（status / models / activity 统一 5s）。 */
@@ -273,6 +274,8 @@ function StatusZone(props: {
   status: StatusFace
   /** 点某托管 TUI 的「查看」：选中并切到终端页。 */
   onViewTui: (pid: number) => void
+  /** 点守护会话的「查看」：选中只读视图并切到终端页。 */
+  onViewBridge: (refId: string) => void
   /** 启动 codearts 成功：选中新 PID 并切到终端页。 */
   onStartedTui: (pid: number) => void
 }): React.ReactNode {
@@ -370,8 +373,20 @@ function StatusZone(props: {
             {externals.map((p) => (
               <div key={p.pid} className="dshca-ext-item">
                 <span className="dshca-badge dshca-badge-warn">非托管</span> PID {p.pid}
+                {p.bridge !== undefined ? (
+                  <button
+                    type="button"
+                    className="dshca-btn-ghost"
+                    style={{ marginLeft: 8, padding: '1px 8px', fontSize: 11 }}
+                    onClick={() => props.onViewBridge(p.bridge!.refId)}
+                    title={`只读查看该守护会话画面（目标 ${p.bridge.goalId}，phase=${p.bridge.phase}）——输入不可用`}
+                  >
+                    查看（只读）
+                  </button>
+                ) : null}
                 <div className="dshca-dim">
                   RSS {fmtBytes(p.rssBytes)} · 状态 {p.procState ?? '—'} · {p.command}
+                  {p.bridge !== undefined ? ` · 守护目标 ${p.bridge.goalId}（${p.bridge.phase}）` : ''}
                 </div>
               </div>
             ))}
@@ -939,8 +954,8 @@ export function CodeArtsPanel(): React.ReactNode {
   const statusFetcher = React.useCallback(() => api.getStatus(), [])
   const status = usePoll(statusFetcher, POLL_MS)
   const [tab, setTab] = React.useState<TabId>('terminal')
-  /** 终端页正在查看的托管 TUI PID（概览「查看」/ 终端选择器 / 启动成功 三处写入；null=自动绑最新存活）。 */
-  const [viewPid, setViewPid] = React.useState<number | null>(null)
+  /** 终端页正在查看的目标（概览「查看」/ 终端选择器 / 启动成功 三处写入；缺省自动绑最新存活托管）。 */
+  const [viewSel, setViewSel] = React.useState<ViewSelection>({ kind: 'auto' })
   const goals = status.data?.goals ?? []
   const panelStyle = (active: boolean, scroll = true): React.CSSProperties =>
     active
@@ -970,21 +985,26 @@ export function CodeArtsPanel(): React.ReactNode {
       <div style={panelStyle(tab === 'terminal', false)}>
         <TerminalZone
           tuis={status.data?.processes.tui ?? []}
-          externals={status.data?.processes.external?.procs ?? []}
+          bridges={status.data?.processes.bridge?.tuis ?? []}
+          externals={(status.data?.processes.external?.procs ?? []).filter((p) => p.bridge === undefined)}
           active={tab === 'terminal'}
-          selectedPid={viewPid}
-          onSelectPid={setViewPid}
+          selected={viewSel}
+          onSelect={setViewSel}
         />
       </div>
       <div style={panelStyle(tab === 'overview')}>
         <StatusZone
           status={status}
           onViewTui={(pid) => {
-            setViewPid(pid)
+            setViewSel({ kind: 'managed', pid })
+            setTab('terminal')
+          }}
+          onViewBridge={(refId) => {
+            setViewSel({ kind: 'bridge', refId })
             setTab('terminal')
           }}
           onStartedTui={(pid) => {
-            setViewPid(pid)
+            setViewSel({ kind: 'managed', pid })
             setTab('terminal')
           }}
         />

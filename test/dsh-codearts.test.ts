@@ -935,6 +935,13 @@ describe('模型管理 ModelManager（功能①）', () => {
     expect(() => mgr.setModel('p', null as any)).toThrow('modelID 非法');
     expect(readFileSync(fx.configPath, 'utf8')).toBe(before);
     expect(validateModelId('huaweicloud-maas', 'deepseek-v4.1-flash-1017')).toBe('huaweicloud-maas/deepseek-v4.1-flash-1017');
+    // 2026-11-01 裁决：modelID 允许 `/`（NVIDIA NIM 官方 ID 形如 deepseek-ai/xxx）；
+    // providerID 仍禁 `/`（分隔符语义），空白/引号/控制字符仍拒绝
+    expect(validateModelId('nvidia', 'deepseek-ai/deepseek-v4.1-flash')).toBe('nvidia/deepseek-ai/deepseek-v4.1-flash');
+    expect(validateModelId('nvidia', 'z-ai/glm-5.3-flash')).toBe('nvidia/z-ai/glm-5.3-flash');
+    expect(() => validateModelId('nvidia/x', 'm')).toThrow('providerID 非法');
+    expect(() => validateModelId('nvidia', 'a b/c')).toThrow('modelID 非法');
+    expect(() => validateModelId('nvidia', 'a"b')).toThrow('modelID 非法');
   });
 
   test('setModelKeyInJsonc 变体：空对象/前置注释/recent 为空时 config.model 兜底读取', () => {
@@ -1586,5 +1593,145 @@ describe('HTTP 管理 API', () => {
     } finally {
       await env.close();
     }
+  }, 15000);
+});
+
+// ============================== ⑧ 守护会话只读查看（bridge-client + ext/view SSE） ==============================
+
+import http from 'node:http';
+import { bridgeListTuis, bridgeViewSnapshot, correlateBridge, defaultBridgeConfig } from '../lib/bridge-client.js';
+
+describe('correlateBridge（PPid 关联纯函数）', () => {
+  const tuis = [
+    { goalId: 'g1', phase: 'active', refId: 'script-5', pid: 500, alive: true },
+    { goalId: 'g2', phase: 'paused', refId: 'script-6', pid: null, alive: false }, // 无 script pid → 无法关联
+  ];
+  const procs = [
+    { pid: 601, ppid: 500, managed: false as const },   // 命中：script-5 的 codearts 子进程
+    { pid: 602, ppid: 999, managed: false as const },   // 其他宿主 → 不关联
+    { pid: 603, ppid: null, managed: false as const },  // ppid 不可读 → 不关联
+  ];
+
+  test('按 ppid==scriptPid 挂 bridge 归属；无 pid 的会话进 unmatched', () => {
+    const { procs: out, unmatched } = correlateBridge(procs as any, tuis as any);
+    expect(out[0]!.bridge).toEqual({ goalId: 'g1', phase: 'active', refId: 'script-5' });
+    expect(out[1]!.bridge).toBeUndefined();
+    expect(out[2]!.bridge).toBeUndefined();
+    expect(unmatched.map((t: any) => t.refId)).toEqual(['script-6']);
+  });
+
+  test('守护不可达的显式错误归一（token 缺失 / 连接拒绝）', async () => {
+    const bad = await bridgeListTuis({ url: 'http://127.0.0.1:1', tokenFile: '/nonexistent-token', timeoutMs: 500 });
+    expect(bad.ok).toBe(false);
+    if (!bad.ok) expect(bad.code).toBe('BRIDGE_TOKEN_MISSING');
+    const badView = await bridgeViewSnapshot({ url: 'http://127.0.0.1:1', tokenFile: '/nonexistent-token', timeoutMs: 500 }, 'script-5');
+    expect(badView.ok).toBe(false);
+  });
+});
+
+describe('GET /codearts/tui/ext/view（守护只读画面 SSE 代理）', () => {
+  /** mock 守护：/tuis 返回一条会话；/tui/view 返回可变 raw（Bearer 鉴权同生产）。 */
+  async function makeBridgeMock(): Promise<{
+    url: string
+    close: () => Promise<void>
+    setRaw: (s: string) => void
+    setAlive: (b: boolean) => void
+  }> {
+    let raw = '第一帧画面';
+    let alive = true;
+    const srv = http.createServer((req, res) => {
+      if (!(req.headers.authorization ?? '').startsWith('Bearer ')) { res.writeHead(401).end(); return; }
+      const u = new URL(req.url ?? '/', 'http://x');
+      if (u.pathname === '/tuis') {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, tuis: [{ goalId: 'g9', phase: 'active', refId: 'script-1', kind: 'pty', pid: 4242, alive }] }));
+        return;
+      }
+      if (u.pathname === '/tui/view') {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, refId: u.searchParams.get('ref'), raw, meta: { pid: 4242, alive, kind: 'pty' } }));
+        return;
+      }
+      res.writeHead(404).end();
+    });
+    await new Promise<void>((r) => srv.listen(0, '127.0.0.1', r));
+    const addr = srv.address() as { port: number };
+    return {
+      url: `http://127.0.0.1:${addr.port}`,
+      setRaw: (s: string) => { raw = s; },
+      setAlive: (b: boolean) => { alive = b; },
+      close: () => new Promise((r) => srv.close(() => r())),
+    };
+  }
+
+  test('首帧 hello+snap；增量 chunk；alive=false → exit 帧后 end', async () => {
+    const bridge = await makeBridgeMock();
+    const stateDir = tmp('ext-view');
+    const tokenFile = join(stateDir, 'daemon-token');
+    writeFileSync(tokenFile, 'test-token\n');
+    /** 捕获路由 handler（照 ④ 插件入口用例的 mock webServer 模式）。 */
+    let handler: ((req: any, res: any) => void) | null = null;
+    const ctx: any = {
+      webServer: { register: (route: any) => { handler = route.handler; return () => {}; } },
+      processManager: new ProcessManager({ stateDir, binPath: join(stateDir, 'no-bin'), wrapperPath: stateDir }),
+      goalSupervisor: { listGoals: () => [] },
+      modelManager: { listModels: () => ({ recent: [], favorite: [], configured: null, builtin: [], custom: [] }) },
+      audit: { health: () => ({ ok: true }), append: () => {} },
+      bridgeCfg: { url: bridge.url, tokenFile, timeoutMs: 2000 },
+    };
+    registerRoutes(ctx);
+    expect(handler).not.toBeNull();
+
+    const closeListeners: Array<() => void> = [];
+    const chunks: string[] = [];
+    let ended = false;
+    const res: any = {
+      writeHead: () => res,
+      write: (s: string) => { chunks.push(s); return true; },
+      end: () => { ended = true; },
+    };
+    const req: any = { url: '/codearts/tui/ext/view?ref=script-1', method: 'GET', on: (_ev: string, fn: () => void) => { closeListeners.push(fn); } };
+    handler!(req, res);
+    await sleep(250); // 首帧：hello + snap（首 poll 立即）
+    expect(chunks.join('')).toContain('"t":"hello"');
+    expect(chunks.join('')).toContain('第一帧画面');
+
+    bridge.setRaw('第一帧画面第二帧增量');
+    await sleep(750); // 下一 poll（500ms）→ 前缀 diff → chunk（snap 不重发）
+    expect(chunks.join('')).toContain('第二帧增量');
+    const snapCount = chunks.filter((c) => c.includes('"t":"snap"')).length;
+    expect(snapCount).toBe(1);
+
+    bridge.setAlive(false);
+    await sleep(750);
+    expect(chunks.join('')).toContain('"t":"exit"');
+    expect(ended).toBe(true);
+    for (const fn of closeListeners) fn(); // 触发清理（停轮询定时器）
+    await bridge.close();
+  }, 15000);
+
+  test('非法 ref → 400 BAD_REF；未配置 bridgeCfg → 503', async () => {
+    const stateDir = tmp('ext-view-bad');
+    let handler: any = null;
+    const ctx: any = {
+      webServer: { register: (route: any) => { handler = route.handler; return () => {}; } },
+      processManager: new ProcessManager({ stateDir, binPath: join(stateDir, 'no-bin'), wrapperPath: stateDir }),
+      goalSupervisor: { listGoals: () => [] },
+      modelManager: { listModels: () => ({ recent: [], favorite: [], configured: null, builtin: [], custom: [] }) },
+      audit: { health: () => ({ ok: true }), append: () => {} },
+      bridgeCfg: undefined,
+    };
+    registerRoutes(ctx);
+    const res: any = { statusCode: 0, body: null as any, writeHead: (c: number) => { res.statusCode = c; return res; }, write: () => true, end: (b?: string) => { res.body = b ?? null; } };
+    handler({ url: '/codearts/tui/ext/view?ref=..%2Fetc', method: 'GET', on: () => {} } as any, res);
+    expect(res.statusCode).toBe(400);
+    expect(res.body).toContain('BAD_REF');
+
+    const ctx2 = { ...ctx, bridgeCfg: undefined };
+    let handler2: any = null;
+    registerRoutes({ ...ctx2, webServer: { register: (route: any) => { handler2 = route.handler; return () => {}; } } });
+    const res2: any = { statusCode: 0, writeHead: (c: number) => { res2.statusCode = c; return res2; }, write: () => true, end: () => {} };
+    handler2({ url: '/codearts/tui/ext/view?ref=script-1', method: 'GET', on: () => {} } as any, res2);
+    expect(res2.statusCode).toBe(503);
   }, 15000);
 });

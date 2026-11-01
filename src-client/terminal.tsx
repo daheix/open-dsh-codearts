@@ -8,7 +8,7 @@
  * ⚠ 权限边界（区域标题显式标注）：终端输入=直接操控码道，键盘实时生效。
  *
  * 刷新机制（2026-11-01 两轮实测裁决）：
- *   - 单例连接：connPidRef 守卫，同一 pid 只建一条 SSE；Tab 面板常挂载，切 Tab 不断流。
+ *   - 单例连接：connKeyRef 守卫，同一查看目标只建一条 SSE；Tab 面板常挂载，切 Tab 不断流。
  *   - （重）连一律 term.reset() 清屏后只写本连接 snap——杜绝 snap+旧 chunk 叠加。
  *   - 批量写入：writeQueue 50ms 合帧；**队列上限 4MB，超限丢最老**（终端是显示流不是
  *     业务数据，超限丢老块等同终端 scrollback 淘汰；丢时 console.info 留痕一次）。
@@ -90,26 +90,55 @@ function connBadgeCls(s: ConnState): string {
   return 'dshca-badge'
 }
 
+/** 终端查看目标选择：自动(最新存活托管) / 指定托管 PID / 指定守护会话（只读）。 */
+export type ViewSelection = { kind: 'auto' } | { kind: 'managed'; pid: number } | { kind: 'bridge'; refId: string }
+
 /** 终端 Tab（独占整页）：xterm + 连接状态徽章 + 重连 + 键入直通。 */
 export function TerminalZone(props: {
   tuis: TuiProc[]
-  /** 非托管 codearts 进程（其他宿主启动）：仅展示为不可接入的灰 chip，绝不伪装成可查看。 */
+  /** 守护会话（codearts-bridge 监督驱动）：只读画面查看（SSE 代理快照，无输入通道）。 */
+  bridges: Array<{ refId: string; pid: number | null; goalId: string; phase: string; alive: boolean }>
+  /** 非托管且非守护的 codearts 进程：仅展示为不可接入的灰 chip，绝不伪装成可查看。 */
   externals: Array<{ pid: number }>
   active: boolean
-  /** 用户显式选择的查看目标（null = 自动绑定最新存活托管 TUI）。 */
-  selectedPid: number | null
-  onSelectPid: (pid: number | null) => void
+  /** 用户显式选择的查看目标。 */
+  selected: ViewSelection
+  onSelect: (s: ViewSelection) => void
 }): React.ReactNode {
   const alive = props.tuis.filter((p) => p.alive)
-  const selected = props.selectedPid !== null ? (props.tuis.find((p) => p.pid === props.selectedPid) ?? null) : null
-  // 绑定优先级：显式选择的存活 TUI > 默认最新存活。显式选择已死 → 不自动改绑其他
-  // 进程（防"画面看起来还连着"的错觉），显式报"已退出"由用户重新选择。
-  const pid = selected !== null
-    ? (selected.alive ? selected.pid : null)
-    : (alive.length > 0 ? (alive[alive.length - 1] ?? null)!.pid : null)
-  const selectedDead = selected !== null && !selected.alive
+  /** 选择快照（局部常量保住判别联合收窄）。 */
+  const sel = props.selected
+  const selectedManaged = sel.kind === 'managed' ? (props.tuis.find((p) => p.pid === sel.pid) ?? null) : null
+  const selectedBridge = sel.kind === 'bridge' ? (props.bridges.find((b) => b.refId === sel.refId) ?? null) : null
+  // 绑定优先级：显式选择（托管存活 / 守护会话）> 默认最新存活托管。显式选择的托管
+  // TUI 已死 → 不自动改绑其他进程（防"画面看起来还连着"的错觉），显式报"已退出"。
+  const managedConn: { pid: number } | null =
+    props.selected.kind === 'managed'
+      ? (selectedManaged !== null && selectedManaged.alive ? { pid: selectedManaged.pid } : null)
+      : (alive.length > 0 ? { pid: (alive[alive.length - 1] ?? null)!.pid } : null)
+  const bridgeConn: { refId: string; pid: number | null } | null =
+    props.selected.kind === 'bridge' && selectedBridge !== null
+      ? { refId: selectedBridge.refId, pid: selectedBridge.pid }
+      : null
+  /** 连接描述（互斥：选择只有一种 kind）。守护会话走只读代理流。 */
+  const target: { key: string; url: string; managed: boolean; pid: number | null } | null =
+    bridgeConn !== null
+      ? {
+          key: `bridge:${bridgeConn.refId}`,
+          url: `/codearts/tui/ext/view?ref=${encodeURIComponent(bridgeConn.refId)}`,
+          managed: false,
+          pid: bridgeConn.pid,
+        }
+      : managedConn !== null
+        ? { key: `managed:${managedConn.pid}`, url: `/codearts/tui/stream?pid=${managedConn.pid}`, managed: true, pid: managedConn.pid }
+        : null
+  const selectedDead = props.selected.kind === 'managed' && selectedManaged !== null && !selectedManaged.alive
+  const targetKey = target?.key ?? null
+  /** 供非重连 effect 读取的最新连接描述（避免 target 对象身份进依赖数组）。 */
+  const targetRef = React.useRef(target)
+  targetRef.current = target
   const [nonce, setNonce] = React.useState(0) // 重连信号（手动重连/心跳超时共用）
-  const [conn, setConn] = React.useState<ConnState>(pid === null ? 'idle' : 'connecting')
+  const [conn, setConn] = React.useState<ConnState>(target === null ? 'idle' : 'connecting')
   const [err, setErr] = React.useState<string | null>(null)
   const [frames, setFrames] = React.useState(0) // 帧计数（连接存活可视化）
   const [fontSize, setFontSize] = React.useState(loadFontSize)
@@ -117,8 +146,8 @@ export function TerminalZone(props: {
   const termRef = React.useRef<Terminal | null>(null)
   const esRef = React.useRef<EventSource | null>(null)
   const fitRef = React.useRef<FitAddon | null>(null)
-  /** 连接单例守卫：当前 SSE 绑定的 pid（与 esRef 联动，防重复建连）。 */
-  const connPidRef = React.useRef<number | null>(null)
+  /** 连接单例守卫：当前 SSE 绑定的目标 key（与 esRef 联动，防重复建连）。 */
+  const connKeyRef = React.useRef<string | null>(null)
   /** 写队列 + 合帧定时器 + 队列字节数（超限丢老）。 */
   const writeQueueRef = React.useRef<string[]>([])
   const writeBytesRef = React.useRef(0)
@@ -139,17 +168,17 @@ export function TerminalZone(props: {
     if (!disposedRef.current) setErr(m)
   }
 
-  // pid 或重连信号变化 → 断旧（reset 语义）建新；同一 pid 且连接健在则跳过（单例守卫）
+  // 目标或重连信号变化 → 断旧（reset 语义）建新；同一目标且连接健在则跳过（单例守卫）
   React.useEffect(() => {
     disposedRef.current = false
-    if (pid === null) {
-      connPidRef.current = null
+    if (target === null) {
+      connKeyRef.current = null
       setConnSafe('idle')
       setErrSafe(null)
       return
     }
-    // 单例守卫：同 pid 的活跃连接不重建（重渲染/Tab 切换不再产生第二路数据源）
-    if (esRef.current !== null && connPidRef.current === pid) return
+    // 单例守卫：同一目标的活跃连接不重建（重渲染/Tab 切换不再产生第二路数据源）
+    if (esRef.current !== null && connKeyRef.current === targetKey) return
     setConnSafe('connecting')
     setErrSafe(null)
     setFrames(0)
@@ -206,30 +235,43 @@ export function TerminalZone(props: {
       }
     }
 
-    // fit 尺寸变化 → 防抖通知服务端 resize（node-pty TIOCSWINSZ 动态生效）
+    // fit 尺寸变化 → 防抖通知服务端 resize（node-pty TIOCSWINSZ 动态生效；仅托管流——
+    // 守护会话只读，尺寸归其监督器管，本端 fit 仅本地显示）
     const scheduleResizeNotify = (): void => {
       if (resizeTimerRef.current !== null) clearTimeout(resizeTimerRef.current)
       resizeTimerRef.current = setTimeout(() => {
         resizeTimerRef.current = null
         const t = termRef.current
-        if (t !== null && pid !== null) void api.resizeTui(pid, t.cols, t.rows).catch(() => {})
+        const cur = targetRef.current
+        if (t !== null && cur !== null && cur.managed && cur.pid !== null) {
+          void api.resizeTui(cur.pid, t.cols, t.rows).catch(() => {})
+        }
       }, 300)
     }
 
     // ---- 键入直通（合帧）：⚠ 键盘输入实时生效——权限边界已在标题标注 ----
+    // 守护会话（只读）不发送任何输入：目标由守护监督循环驱动，注入通道归其独占。
     const flushInput = (): void => {
       const buf = inputBufRef.current
       inputBufRef.current = ''
       inputTimerRef.current = null
-      if (buf.length === 0 || pid === null) return
+      const cur = targetRef.current
+      if (buf.length === 0 || cur === null || !cur.managed || cur.pid === null) return
       api
-        .postTuiInput(pid, buf)
+        .postTuiInput(cur.pid, buf)
         .catch((e: unknown) => {
           // 显式报错（禁静默）
           setErrSafe(`终端输入失败: ${errMsg(e)}`)
         })
     }
     const dataSub = term.onData((d) => {
+      // 只读视图：击键不注入、不静默——直接给出能力边界提示（每次按键都提示会刷屏，
+      // 用连接错误条展示一次即可）
+      if (targetRef.current !== null && !targetRef.current.managed) {
+        inputBufRef.current = ''
+        setErrSafe('守护会话为只读画面：输入由 codearts-bridge 监督循环驱动，本面板不注入键盘。')
+        return
+      }
       inputBufRef.current += d
       if (inputTimerRef.current === null) {
         inputTimerRef.current = setTimeout(flushInput, INPUT_FLUSH_MS)
@@ -238,16 +280,16 @@ export function TerminalZone(props: {
 
     // ---- SSE：单例连接（修复根因 ①） + 帧计数诊断 ----
     let closedByUs = false
-    const es = new EventSource(`/codearts/tui/stream?pid=${pid}`)
+    const es = new EventSource(target.url)
     esRef.current = es
-    connPidRef.current = pid
+    connKeyRef.current = targetKey
     lastFrameAtRef.current = Date.now()
     const markFrame = (): void => {
       lastFrameAtRef.current = Date.now()
       frameCountRef.current += 1
       // 连接存活诊断：每 100 帧报一次（计数在涨=连接活着；恒 0=连接/路由问题）
       if (frameCountRef.current % 100 === 0) {
-        console.info(`[dsh-codearts] TUI 流帧计数: ${frameCountRef.current}（pid=${pid}）`)
+        console.info(`[dsh-codearts] TUI 流帧计数: ${frameCountRef.current}（target=${targetKey}）`)
         if (!disposedRef.current) setFrames(frameCountRef.current)
       }
     }
@@ -262,9 +304,12 @@ export function TerminalZone(props: {
         const msg = JSON.parse(ev.data) as { t: string; d?: string }
         if (msg.t === 'ping') return // 心跳：只续命，不写终端
         if (msg.t === 'hello') {
-          // 握手帧：把本端 xterm 尺寸 resize 回服务端 PTY（尺寸协商闭环；已有 TUI 即时生效）
+          // 握手帧：托管流把本端 xterm 尺寸 resize 回服务端 PTY（尺寸协商闭环；
+          // 已有 TUI 即时生效）。守护只读流无尺寸协商（尺寸归守护监督器管）——仅本地 fit。
           const t = termRef.current
-          if (t !== null) void api.resizeTui(pid, t.cols, t.rows).catch(() => {})
+          if (t !== null && target.managed && target.pid !== null) {
+            void api.resizeTui(target.pid, t.cols, t.rows).catch(() => {})
+          }
           return
         }
         if (msg.t === 'snap') {
@@ -279,6 +324,25 @@ export function TerminalZone(props: {
         }
         if (msg.t === 'chunk') {
           if (typeof msg.d === 'string' && msg.d.length > 0) enqueueWrite(msg.d)
+          return
+        }
+        if (msg.t === 'exit') {
+          // 守护只读流的会话消亡帧（托管流走下方 event:exit 通道）：显式断流转退出态
+          closedByUs = true
+          setConnSafe('exited')
+          const t = termRef.current
+          if (t !== null) t.write('\r\n\x1b[33m[守护会话已结束——在「查看目标」选择其他会话]\x1b[0m\r\n')
+          es.close()
+          if (esRef.current === es) esRef.current = null
+          return
+        }
+        if (msg.t === 'error') {
+          // 守护侧失败（会话消亡/守护下线）：显式报错并断流——不伪装成正常空白
+          closedByUs = true
+          setConnSafe('error')
+          setErrSafe(`守护画面流失败：${msg.d ?? '未知错误'}`)
+          es.close()
+          if (esRef.current === es) esRef.current = null
         }
       } catch {
         // 非 JSON 帧无业务语义（服务端保证帧格式），忽略
@@ -334,7 +398,7 @@ export function TerminalZone(props: {
       closedByUs = true
       es.close()
       if (esRef.current === es) esRef.current = null
-      if (connPidRef.current === pid) connPidRef.current = null
+      if (connKeyRef.current === targetKey) connKeyRef.current = null
       if (writeTimerRef.current !== null) clearTimeout(writeTimerRef.current)
       writeTimerRef.current = null
       if (resizeTimerRef.current !== null) clearTimeout(resizeTimerRef.current)
@@ -343,7 +407,7 @@ export function TerminalZone(props: {
       inputTimerRef.current = null
       dataSub.dispose()
     }
-  }, [pid, nonce])
+  }, [targetKey, nonce])
 
   // 卸载：销毁 xterm 实例（连接已由上方清理）
   React.useEffect(() => {
@@ -363,7 +427,10 @@ export function TerminalZone(props: {
           const term = termRef.current
           if (term !== null) {
             term.refresh(0, term.rows - 1)
-            if (pid !== null) void api.resizeTui(pid, term.cols, term.rows).catch(() => {})
+            const cur = targetRef.current
+            if (cur !== null && cur.managed && cur.pid !== null) {
+              void api.resizeTui(cur.pid, term.cols, term.rows).catch(() => {})
+            }
           }
         } catch { /* 容器未布局 */ }
       }, 60)
@@ -405,8 +472,12 @@ export function TerminalZone(props: {
         </span>
         <span style={{ marginLeft: 'auto', display: 'inline-flex', gap: 8, alignItems: 'center' }}>
           <span className={connBadgeCls(conn)}>{CONN_LABEL[conn]}</span>
+          {conn === 'connected' && target !== null && !target.managed ? (
+            <span className="dshca-badge dshca-badge-warn" title="守护会话只读：画面来自 codearts-bridge 快照代理，键盘注入不可用">只读</span>
+          ) : null}
           {conn === 'connected' ? <span className="dshca-badge" title="本连接已收到的 SSE 帧数（连接存活证据）">{frames} 帧</span> : null}
-          {pid !== null ? <span className="dshca-badge">PID {pid}</span> : null}
+          {target !== null && target.managed ? <span className="dshca-badge">PID {target.pid}</span> : null}
+          {target !== null && !target.managed ? <span className="dshca-badge">守护 {target.pid !== null ? `PID ${target.pid}` : target.key}</span> : null}
           <button type="button" className="dshca-btn-ghost" onClick={() => setFontSize((v) => Math.max(10, v - 1))} title="减小终端字号（10-24px，localStorage 记忆）">
             A-
           </button>
@@ -419,13 +490,13 @@ export function TerminalZone(props: {
           </button>
         </span>
       </h2>
-      {props.tuis.length > 0 || props.externals.length > 0 ? (
+      {props.tuis.length > 0 || props.bridges.length > 0 || props.externals.length > 0 ? (
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', flexShrink: 0 }}>
           <span style={{ color: '#9a9a9a', fontSize: 11 }}>查看目标:</span>
           <button
             type="button"
-            className={`dshca-chip${props.selectedPid === null && pid !== null ? ' dshca-chip-on' : ''}`}
-            onClick={() => props.onSelectPid(null)}
+            className={`dshca-chip${props.selected.kind === 'auto' && target !== null && target.managed ? ' dshca-chip-on' : ''}`}
+            onClick={() => props.onSelect({ kind: 'auto' })}
             title="自动绑定最新启动的存活托管 TUI"
           >
             自动 · 最新
@@ -434,18 +505,29 @@ export function TerminalZone(props: {
             <button
               key={p.pid}
               type="button"
-              className={`dshca-chip${p.pid === pid ? ' dshca-chip-on' : ''}${p.alive ? '' : ' dshca-chip-dead'}`}
-              onClick={() => props.onSelectPid(p.pid)}
-              title={p.alive ? `查看 PID ${p.pid} 的终端画面` : `PID ${p.pid} 已退出（仅留档，无法重连）`}
+              className={`dshca-chip${props.selected.kind === 'managed' && props.selected.pid === p.pid && p.alive ? ' dshca-chip-on' : ''}${p.alive ? '' : ' dshca-chip-dead'}`}
+              onClick={() => props.onSelect({ kind: 'managed', pid: p.pid })}
+              title={p.alive ? `查看 PID ${p.pid} 的终端画面（可键盘交互）` : `PID ${p.pid} 已退出（仅留档，无法重连）`}
             >
               {p.alive ? '🟢' : '⚪'} PID {p.pid}
+            </button>
+          ))}
+          {props.bridges.map((b) => (
+            <button
+              key={b.refId}
+              type="button"
+              className={`dshca-chip dshca-chip-bridge${props.selected.kind === 'bridge' && props.selected.refId === b.refId ? ' dshca-chip-on' : ''}${b.alive ? '' : ' dshca-chip-dead'}`}
+              onClick={() => props.onSelect({ kind: 'bridge', refId: b.refId })}
+              title={`只读查看守护会话画面（目标 ${b.goalId}，phase=${b.phase}）——输入由 codearts-bridge 监督循环驱动，本面板不注入键盘`}
+            >
+              🟡 守护 {b.pid !== null ? `PID ${b.pid}` : b.refId}
             </button>
           ))}
           {props.externals.map((p) => (
             <span
               key={p.pid}
               className="dshca-chip dshca-chip-ext"
-              title="非托管进程：由其他宿主（如 codearts-bridge 守护）启动，PTY 归其所有，本插件无法接入画面/输入"
+              title="非托管进程：非 codearts-bridge 守护会话，PTY 归其宿主所有，本插件无法接入画面/输入"
             >
               非托管 {p.pid}（不可接入）
             </span>
@@ -454,12 +536,17 @@ export function TerminalZone(props: {
       ) : null}
       {selectedDead ? (
         <div className="dshca-empty">
-          所选 TUI（PID {props.selectedPid}）已退出——在上方选择其他 TUI，或到「概览」页点「启动 codearts」。
+          所选 TUI（PID {sel.kind === 'managed' ? sel.pid : '—'}）已退出——在上方选择其他 TUI，或到「概览」页点「启动 codearts」。
         </div>
       ) : null}
-      {pid === null && !selectedDead ? (
+      {props.selected.kind === 'bridge' && selectedBridge === null ? (
         <div className="dshca-empty">
-          当前没有存活的托管 TUI——到「概览」页点「启动 codearts」后此页自动接入新进程。
+          所选守护会话（{props.selected.refId}）已不在清单——守护可能已完成/停止该目标，请在上方重新选择。
+        </div>
+      ) : null}
+      {target === null && !selectedDead ? (
+        <div className="dshca-empty">
+          当前没有存活的托管 TUI——到「概览」页点「启动 codearts」后此页自动接入新进程；守护会话可在上方 chips 只读查看。
         </div>
       ) : null}
       {err !== null ? <div className="dshca-errbar" role="alert">⚠️ {err}</div> : null}
@@ -474,7 +561,7 @@ export function TerminalZone(props: {
           border: '1px solid #3a3a40',
           borderRadius: 8,
           padding: '2px 4px',
-          display: pid === null ? 'none' : 'block',
+          display: target === null ? 'none' : 'block',
         }}
       />
       <div style={{ flex: 'none', color: '#9a9a9a', fontSize: 11 }}>

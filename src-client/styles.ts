@@ -39,6 +39,7 @@ export const PANEL_STYLES = `
 .dshca-chip-on{background:rgba(96,165,250,.2);color:#60a5fa;border-color:rgba(96,165,250,.5);font-weight:600}
 .dshca-chip-dead{opacity:.45}
 .dshca-chip-ext{cursor:default;color:#fbbf24;border-color:rgba(251,191,36,.4);background:rgba(251,191,36,.08)}
+.dshca-chip-bridge{color:#fbbf24;border-color:rgba(251,191,36,.5);background:rgba(251,191,36,.12)}
 .dshca-btn-danger:hover{background:rgba(248,113,113,.1)}
 .dshca-btn-danger:disabled{opacity:.45;cursor:default}
 .dshca-input{border:1px solid #3a3a40;border-radius:8px;padding:6px 9px;font-size:12px;background:rgba(20,20,24,.92);color:#ffffff;min-width:0}

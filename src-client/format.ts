@@ -70,11 +70,15 @@ export function errMsg(e: unknown): string {
 
 /**
  * 模型 ID 合法性（与 host model-manager.validateModelId 同口径）：
- * 非空、无空白、无引号、无控制字符。返回 null 表示合法，否则返回中文错误。
+ * providerID 非空、无空白、无引号、无控制字符、不含 `/`（provider/model 分隔符）；
+ * modelID 额外允许 `/`——NVIDIA NIM 等模型的官方 ID 形如 `deepseek-ai/deepseek-v4.1-flash`
+ * （kernel 按"首个 / 分隔 provider/model"解析，modelID 内多级路径合法）。
+ * 返回 null 表示合法，否则返回中文错误。
  */
 export function validateModelId(providerID: string, modelID: string): string | null {
-  const re = /^[A-Za-z0-9_.-]+$/
-  if (!re.test(providerID)) return `providerID 非法（仅允许字母数字_.-）：${providerID || '（空）'}`
-  if (!re.test(modelID)) return `modelID 非法（仅允许字母数字_.-）：${modelID || '（空）'}`
+  const reProvider = /^[A-Za-z0-9_.-]+$/
+  const reModel = /^[A-Za-z0-9_./-]+$/
+  if (!reProvider.test(providerID)) return `providerID 非法（仅允许字母数字_.-）：${providerID || '（空）'}`
+  if (!reModel.test(modelID)) return `modelID 非法（仅允许字母数字_.-/）：${modelID || '（空）'}`
   return null
 }

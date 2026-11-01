@@ -18,7 +18,8 @@
 | **模型配置界面** | 列出 CodeArts 最近使用 / 内置候选 / 自定义模型，一键切换默认模型；支持添加、删除自定义 provider+model |
 | **交互流** | 解析 CodeArts kernel 日志为结构化时间线（用户/助手/工具/错误/系统），并与原始日志互相印证 |
 | **HTTP 管理 API** | `/codearts/*` 全套接口，可被脚本、CI 或其他智能体直接调用 |
-| **非托管进程可见** | 状态页只读发现系统中由其他宿主（codearts-bridge 守护、手工终端）启动的 codearts 进程，明确标注「非托管」，避免把"本插件没有托管 TUI"误读成"机器上没有 TUI 在跑" |
+| **非托管进程可见** | 状态页只读发现系统中由其他宿主启动的 codearts 进程，明确标注「非托管」；命中 codearts-bridge 守护会话的（按 PPid 关联）额外提供「查看（只读）」画面 |
+| **守护会话只读画面** | 经 codearts-bridge `GET /tuis` + `GET /tui/view` 代理快照，侧栏 TUI 终端以「🟡 守护 PID」chip 只读查看守护驱动的目标会话（500ms 快照 diff 增量；无输入通道——注入权归守护监督器独占） |
 | **dsh 平台工具** | 自动注册 `codearts_status` / `codearts_run` / `codearts_goal`，模型可在对话中直接调度 CodeArts |
 | **安装管家** | 探测 CodeArts CLI、备份自愈、受控升级（哈希校验 + 失败回滚），应对厂商自动升级缺陷 |
 
@@ -115,13 +116,14 @@ dsh plugin --profile web remove dsh-codearts
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET | `/codearts/status` | 总览（托管进程表 + 非托管进程发现 + 目标摘要 + 安装健康 + 审计健康） |
+| GET | `/codearts/status` | 总览（托管进程表 + 非托管进程发现 + 守护会话 bridge + 目标摘要 + 安装健康 + 审计健康） |
 | GET | `/codearts/health` | 进程健康（存活 / RSS / 启动时间） |
 | GET | `/codearts/models` | 模型清单（recent / builtin / custom + 当前模型） |
 | POST | `/codearts/model` | 切换默认模型 `{providerID, modelID}` |
 | POST / DELETE | `/codearts/models/custom` | 添加 / 删除自定义模型 |
 | POST | `/codearts/run` | 单回合无头执行（需要 AK/SK；未配置时显式报错） |
 | POST | `/codearts/tui/start` | 启动 TUI `{cols?, rows?}` |
+| GET | `/codearts/tui/ext/view` | 守护会话只读画面 SSE（`?ref=<refId>`；snap/chunk/exit/ping；无输入通道） |
 | POST | `/codearts/tui/stop` | 停止 TUI `{pid}` |
 | POST | `/codearts/tui/input` | 写入终端 `{pid, data}` |
 | POST | `/codearts/tui/resize` | 调整尺寸 `{pid, cols, rows}` |
