@@ -168,6 +168,13 @@ bun test                       # 69 用例（fixture 沙箱，不触真实 CodeA
 ./manage.sh logs -f            # 跟踪 dsh 日志中的插件记录
 ```
 
+`manage.sh` 默认连接 `http://127.0.0.1:3080`。若 dsh 绑定的是其他地址（如 `--host 0.0.0.0`）或端口：
+
+```bash
+DSH_URL=http://<host>:<port> ./manage.sh status
+DSH_PROFILE_DIR=~/.dsh/profiles/tui ./manage.sh deploy
+```
+
 > `manage.sh deploy` 面向「profile 副本」部署模式；若使用 `dsh plugin add .` 的 pnpm 链接模式，改完源码重启 dsh 即可。
 
 测试使用沙箱 `codeartsHome`，不会读写真实的 `~/.codeartsdoer`。

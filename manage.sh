@@ -86,9 +86,13 @@ if (!(p.dependencies ?? {})['node-pty']) { console.error('缺少运行时依赖 
   else
     die "package.json 运行时依赖不合规（禁止 @deepseek-ai/dsh-tools 与 \"*\" 版本；必须声明 node-pty）"
   fi
-  if [ ! -d "$TARGET/node_modules/node-pty" ]; then
-    echo "  ⚠ 目标缺少 node_modules/node-pty —— HTTP/模型功能可用，但 TUI 终端不可用"
-    echo "    修复: dsh plugin --profile <profile> rebuild node-pty"
+  # 按插件真实解析路径检查 node-pty（链接模式下位于 profile 根，不在插件目录内）
+  if ! node --input-type=module -e "
+import { createRequire } from 'node:module';
+createRequire('$TARGET/lib/index.js')('node-pty');
+" >/dev/null 2>&1; then
+    echo "  ⚠ 从插件入口解析不到 node-pty —— HTTP/模型功能可用，但 TUI 终端不可用"
+    echo "    修复: 在 profile 的 pnpm-workspace.yaml 允许 node-pty 构建后执行 dsh plugin --profile <profile> rebuild node-pty"
   fi
   echo "  ✓ 无 lib/package.json 污染，运行时依赖合规"
 
@@ -150,7 +154,10 @@ PY
 
   echo
   echo "== 运行时状态（$DSH_URL） =="
-  curl -fsS --max-time 8 "$DSH_URL/codearts/status" | python3 -c "$(cat <<'PY'
+  local status_json
+  status_json=$(curl -fsS --max-time 8 "$DSH_URL/codearts/status") \
+    || die "无法连接 $DSH_URL（dsh 未运行，或监听地址不是默认值；用 DSH_URL=http://<host>:<port> ./manage.sh status 指定）"
+  printf '%s' "$status_json" | python3 -c "$(cat <<'PY'
 import json, sys
 d = json.load(sys.stdin)
 p = d.get("processes", {})
@@ -166,18 +173,20 @@ for x in active:
     s = x.get("stats", {})
     print(f"    - {x.get('goalId')} {x.get('state')} 注入={s.get('injections')} 会话={x.get('session', {}).get('state')}")
 PY
-)" || die "无法连接 $DSH_URL（dsh 未运行？）"
+)" || die "运行时状态解析失败（接口返回非 JSON？请检查 $DSH_URL/codearts/status）"
 
   echo
   echo "== 模型 =="
-  curl -fsS --max-time 8 "$DSH_URL/codearts/models" | python3 -c "$(cat <<'PY'
+  local models_json
+  models_json=$(curl -fsS --max-time 8 "$DSH_URL/codearts/models") || die "模型接口不可用: $DSH_URL/codearts/models"
+  printf '%s' "$models_json" | python3 -c "$(cat <<'PY'
 import json, sys
 m = json.load(sys.stdin).get("models", {})
 r = m.get("recent") or []
 print("  当前:", (r[0].get("id") if r else "未知"))
 print("  最近:", len(r), "| 内置候选:", len(m.get("builtin") or []), "| 自定义:", len(m.get("custom") or []))
 PY
-)" || echo "  ⚠ 模型接口不可用"
+)" || die "模型数据解析失败: $DSH_URL/codearts/models"
 }
 
 cmd_logs() {
