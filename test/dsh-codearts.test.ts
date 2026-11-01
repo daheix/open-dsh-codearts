@@ -1631,14 +1631,15 @@ describe('correlateBridge（PPid 关联纯函数）', () => {
 });
 
 describe('GET /codearts/tui/ext/view（守护只读画面 SSE 代理）', () => {
-  /** mock 守护：/tuis 返回一条会话；/tui/view 返回可变 raw（Bearer 鉴权同生产）。 */
+  /** mock 守护：/tuis 返回一条会话；/tui/view 返回可变网格行帧（帧协议同生产）。 */
   async function makeBridgeMock(): Promise<{
     url: string
     close: () => Promise<void>
-    setRaw: (s: string) => void
+    setRows: (rows: Array<[number, string]>) => void
     setAlive: (b: boolean) => void
   }> {
-    let raw = '第一帧画面';
+    let rows: Array<[number, string]> = [[0, '\x1b[0m第一帧画面']];
+    let rev = 1;
     let alive = true;
     const srv = http.createServer((req, res) => {
       if (!(req.headers.authorization ?? '').startsWith('Bearer ')) { res.writeHead(401).end(); return; }
@@ -1650,7 +1651,7 @@ describe('GET /codearts/tui/ext/view（守护只读画面 SSE 代理）', () => 
       }
       if (u.pathname === '/tui/view') {
         res.writeHead(200, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ ok: true, refId: u.searchParams.get('ref'), raw, meta: { pid: 4242, alive, kind: 'pty' } }));
+        res.end(JSON.stringify({ ok: true, refId: u.searchParams.get('ref'), rev, rows, meta: { pid: 4242, alive, kind: 'pty' } }));
         return;
       }
       res.writeHead(404).end();
@@ -1659,13 +1660,13 @@ describe('GET /codearts/tui/ext/view（守护只读画面 SSE 代理）', () => 
     const addr = srv.address() as { port: number };
     return {
       url: `http://127.0.0.1:${addr.port}`,
-      setRaw: (s: string) => { raw = s; },
+      setRows: (rws: Array<[number, string]>) => { rows = rws; rev += 1; },
       setAlive: (b: boolean) => { alive = b; },
       close: () => new Promise((r) => srv.close(() => r())),
     };
   }
 
-  test('首帧 hello+snap；增量 chunk；alive=false → exit 帧后 end', async () => {
+  test('首帧 hello+snap（全量行帧）；rev 前进 → 行 diff chunk；rev 不变 → 无帧', async () => {
     const bridge = await makeBridgeMock();
     const stateDir = tmp('ext-view');
     const tokenFile = join(stateDir, 'daemon-token');
@@ -1696,12 +1697,18 @@ describe('GET /codearts/tui/ext/view（守护只读画面 SSE 代理）', () => 
     await sleep(250); // 首帧：hello + snap（首 poll 立即）
     expect(chunks.join('')).toContain('"t":"hello"');
     expect(chunks.join('')).toContain('第一帧画面');
+    const snapCount = (): number => chunks.filter((c) => c.includes('"t":"snap"')).length;
+    expect(snapCount()).toBe(1);
 
-    bridge.setRaw('第一帧画面第二帧增量');
-    await sleep(750); // 下一 poll（500ms）→ 前缀 diff → chunk（snap 不重发）
+    await sleep(700); // rev 不变 → 无新帧
+
+    bridge.setRows([[0, '\x1b[0m第一帧画面'], [2, '\x1b[0m第二帧增量']]);
+    await sleep(750); // rev 前进 → 行 diff chunk（新增行；无 snap 重发）
     expect(chunks.join('')).toContain('第二帧增量');
-    const snapCount = chunks.filter((c) => c.includes('"t":"snap"')).length;
-    expect(snapCount).toBe(1);
+    expect(snapCount()).toBe(1);
+    const chunkFrame = chunks.filter((c) => c.includes('第二帧增量'))[0] ?? '';
+    expect(chunkFrame).toContain('"t":"chunk"');
+    expect(chunkFrame).toContain('\\u001b[3;1H'); // 绝对定位到第 3 行（JSON 转义形态）
 
     bridge.setAlive(false);
     await sleep(750);
